@@ -59,6 +59,9 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download all results
         uses: actions/download-artifact@v4
         with:
@@ -69,16 +72,5 @@ jobs:
           echo "## תוצאות טסט העומס" >> $GITHUB_STEP_SUMMARY
           for f in all-results/*/summary-*.json; do
             echo "### $f" >> $GITHUB_STEP_SUMMARY
-            cat "$f" | python3 -c "
-import json,sys
-d = json.load(sys.stdin)
-metrics = d.get('metrics', {})
-http_req = metrics.get('http_req_duration', {})
-reqs = metrics.get('http_reqs', {})
-failed = metrics.get('http_req_failed', {})
-print(f\"- סה\\\"כ בקשות: {reqs.get('count', 'N/A')}\")
-print(f\"- זמן תגובה ממוצע: {http_req.get('avg', 'N/A')} ms\")
-print(f\"- p95: {http_req.get('p(95)', 'N/A')} ms\")
-print(f\"- אחוז כשלונות: {failed.get('rate', 'N/A')}\")
-" >> $GITHUB_STEP_SUMMARY || echo "שגיאה בפירוק $f" >> $GITHUB_STEP_SUMMARY
+            python3 summarize.py "$f" >> $GITHUB_STEP_SUMMARY || echo "שגיאה בפירוק $f" >> $GITHUB_STEP_SUMMARY
           done
