@@ -1,0 +1,84 @@
+name: Forum Load Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'כתובת הפורום לבדיקה'
+        required: true
+        default: 'https://surveys-trademarks-quantities-elderly.trycloudflare.com'
+      total_vus:
+        description: 'סה"כ משתמשים וירטואליים בו-זמנית (יחולק בין ה-shards)'
+        required: true
+        default: '20000'
+      shard_count:
+        description: 'כמה runners מקבילים (מומלץ 4-10, כל אחד מייצר חלק מהעומס)'
+        required: true
+        default: '5'
+
+jobs:
+  load-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJson(github.event.inputs.shard_count == '5' && '[1,2,3,4,5]' || github.event.inputs.shard_count == '10' && '[1,2,3,4,5,6,7,8,9,10]' || '[1,2,3,4]') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6
+
+      - name: Run load test (shard ${{ matrix.shard }})
+        env:
+          TARGET_URL: ${{ github.event.inputs.target_url }}
+          TOTAL_VUS: ${{ github.event.inputs.total_vus }}
+          SHARD_COUNT: ${{ github.event.inputs.shard_count }}
+        run: |
+          k6 run load-test.js \
+            --out json=results-shard-${{ matrix.shard }}.json \
+            --summary-export=summary-shard-${{ matrix.shard }}.json
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-shard-${{ matrix.shard }}
+          path: |
+            results-shard-${{ matrix.shard }}.json
+            summary-shard-${{ matrix.shard }}.json
+
+  summarize:
+    needs: load-test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all results
+        uses: actions/download-artifact@v4
+        with:
+          path: all-results
+
+      - name: Print combined summary
+        run: |
+          echo "## תוצאות טסט העומס" >> $GITHUB_STEP_SUMMARY
+          for f in all-results/*/summary-*.json; do
+            echo "### $f" >> $GITHUB_STEP_SUMMARY
+            cat "$f" | python3 -c "
+import json,sys
+d = json.load(sys.stdin)
+metrics = d.get('metrics', {})
+http_req = metrics.get('http_req_duration', {})
+reqs = metrics.get('http_reqs', {})
+failed = metrics.get('http_req_failed', {})
+print(f\"- סה\\\"כ בקשות: {reqs.get('count', 'N/A')}\")
+print(f\"- זמן תגובה ממוצע: {http_req.get('avg', 'N/A')} ms\")
+print(f\"- p95: {http_req.get('p(95)', 'N/A')} ms\")
+print(f\"- אחוז כשלונות: {failed.get('rate', 'N/A')}\")
+" >> $GITHUB_STEP_SUMMARY || echo "שגיאה בפירוק $f" >> $GITHUB_STEP_SUMMARY
+          done
